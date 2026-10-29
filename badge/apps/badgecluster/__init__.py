@@ -1,4 +1,4 @@
-"""BadgeCluster foreground app with an injectable host-only Azure test mode."""
+"""BadgeCluster foreground app with cooperative verified Azure HTTPS."""
 import os
 import sys
 import random
@@ -10,16 +10,27 @@ sys.path.insert(0, APP_DIR)
 from cluster_core import Worker, Contributions
 from cluster_session import Session
 from cluster_transport import create_transport
+from cluster_identity import load_node_id
 
 # Independent per-launch PRNG stream; never derive identity from hardware IDs.
-# The capability spike must verify os.urandom on the real event firmware.
-random.seed(int.from_bytes(os.urandom(16), "big"))
+def random_bytes(count):
+    if hasattr(os, "urandom"):
+        return os.urandom(count)
+    if sys.platform == "rp2":
+        raise RuntimeError("Device randomness is required")
+    print("BadgeCluster: simulator-only pseudorandom bytes; networking disabled.")
+    return bytes(random.getrandbits(8) for _ in range(count))
+
+
+random.seed(int.from_bytes(random_bytes(16), "big"))
 worker = Worker(time.ticks_ms(), time.ticks_add, time.ticks_diff,
                 lambda: random.getrandbits(24) / 16777216, time.ticks_ms)
-client = Contributions("node-" + os.urandom(16).hex(),
-                       "session-" + os.urandom(16).hex(), time.ticks_ms(),
+node_id = load_node_id(random_bytes) if sys.platform == "rp2" else "node-" + random_bytes(16).hex()
+client = Contributions(node_id,
+                       "session-" + random_bytes(16).hex(), time.ticks_ms(),
                        time.ticks_add, time.ticks_diff)
 session = Session(worker, client, create_transport())
+client.next_sync = worker.next_batch
 mona = image.load("assets/mona.png")
 spheres = [image.load("assets/sphere_%d.png" % i) for i in range(5)]
 page = 0
@@ -58,7 +69,7 @@ def draw():
         screen.blit(spheres[milestone], vec2((screen.width - 40) // 2, 17))
         screen.blit(mona, vec2((screen.width - 56) // 2, 43))
         centered("LEND YOUR POWER!", 86)
-        centered(session.status() + (" / TEST" if session.transport else " / ECO"), 98, muted)
+        centered(session.status() + (" / TEST" if getattr(session.transport, "test_mode", False) else " / ECO"), 98, muted)
         centered("RIGHT: STATS", screen.height - 10, accent)
     else:
         cluster = client.cluster
@@ -69,7 +80,9 @@ def draw():
         text("Cluster: " + (compact(cluster["samples"]) if cluster else "--"), 4, 62)
         text("Active: " + (str(cluster["activeNodes"]) if cluster else "--"), 4, 76)
         stale = client.stale(time.ticks_ms())
-        text("STALE / " + session.status() if stale else session.status(), 4, 94, muted)
+        status = "NET: " + session.error if session.error else (
+            "STALE / " + session.status() if stale else session.status())
+        text(status, 4, 94, muted)
         centered("LEFT: MONA", screen.height - 10, accent)
 
 

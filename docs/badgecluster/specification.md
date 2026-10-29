@@ -45,7 +45,7 @@ Badge 1..N (MicroPython)
   ├─ cooperative compute scheduler
   ├─ local counters + session ID + sequence
   └─ bounded HTTPS sync client
-           │ POST /api/v1/contributions (every ~120 s)
+           │ POST /api/v1/contributions (every ~60 s)
            ▼
 Azure Container Apps: ASP.NET Core Minimal API
   ├─ input validation and idempotent per-session counters
@@ -77,7 +77,7 @@ For each sample generate two independent uniform values `x,y` in [0,1). Count in
 | Target compute interval | 60 seconds | Low duty cycle |
 | Maximum samples per update slice | 25 | Avoid long frame stalls |
 | Target time budget per update slice | 5 ms | Preserve UI responsiveness; measured, not guaranteed |
-| Sync interval | 120 seconds | Consolidate results and status |
+| Sync interval | 60 seconds | Upload each completed batch; failure backoff still applies |
 | Timeout for network request | 5 seconds | Avoid long UI stalls; may require transport-specific adaptation |
 | Network retry backoff | 30, 60, 120, 300 seconds max | Avoid rapid retries |
 | LED effects | Off by default | Conserve battery |

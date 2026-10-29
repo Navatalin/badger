@@ -12,11 +12,14 @@ class Session:
         self.deadline = None
         self.stopped = False
         self.error = None
+        self.ready = False
 
     def _fail(self, now, category):
+        print("BadgeCluster: sync failed (%s); retrying with backoff." % category)
         self.transport.cancel()
         self.inflight = False
         self.error = category
+        self.ready = False
         self.contributions.failed(now)
 
     def step(self, now):
@@ -29,6 +32,18 @@ class Session:
             if self.inflight:
                 self._fail(now, "low_battery")
             return
+        if not self.inflight:
+            if self.error is not None and not self.contributions.due(now):
+                return
+            try:
+                prepare = getattr(self.transport, "prepare", None)
+                self.ready = prepare() if prepare is not None else True
+            except OSError as error:
+                print("BadgeCluster: Wi-Fi preparation error:", error)
+                self._fail(now, "network")
+                return
+            if not self.ready:
+                return
         if self.inflight:
             if self.worker.diff(now, self.deadline) >= 0:
                 self._fail(now, "timeout")
@@ -41,9 +56,18 @@ class Session:
                         self._fail(now, "network")
                     else:
                         self.contributions.acknowledge(response, now)
+                        if self.worker.diff(self.worker.next_batch,
+                                            self.contributions.next_sync) < 0:
+                            self.contributions.next_sync = self.worker.next_batch
                         self.inflight = False
                         self.error = None
-            except (OSError, ValueError, TypeError, KeyError):
+                        print("BadgeCluster: Azure accepted %d samples." %
+                              self.contributions.accepted_samples)
+            except OSError as error:
+                print("BadgeCluster: network error:", error)
+                self._fail(now, "network")
+            except (ValueError, TypeError, KeyError) as error:
+                print("BadgeCluster: transport/response error:", error)
                 self._fail(now, "invalid_response")
             return
         # Prefer a complete batch; never wait for network to continue computing.
@@ -52,6 +76,7 @@ class Session:
                 snapshot = self.contributions.request(self.worker.samples, self.worker.inside)
                 self.transport.start(snapshot)
                 self.inflight = True
+                self.error = None
                 self.deadline = self.worker.add(now, REQUEST_MS)
             except (OSError, ValueError):
                 self._fail(now, "network")
@@ -63,7 +88,13 @@ class Session:
             return "PAUSED"
         if self.inflight:
             return "CONNECTING"
-        if self.transport is None or self.contributions.offline:
+        if self.transport is None or self.error is not None:
+            return "OFFLINE"
+        if not self.ready:
+            return "JOINING WIFI"
+        if self.contributions.received_at is None:
+            return "WAITING SYNC"
+        if self.contributions.offline:
             return "OFFLINE"
         return "CONTRIBUTING"
 

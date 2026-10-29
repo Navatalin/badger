@@ -56,6 +56,97 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.client.accepted_samples, 250)
         self.assertEqual(self.session.status(), 'CONTRIBUTING')
 
+    def test_uploads_each_batch_without_adding_request_duration_to_interval(self):
+        self.start_request()
+        self.now = 62000
+        self.transport.result = ('ok', self.response())
+        self.session.step(self.now)
+        self.assertEqual(self.client.next_sync, 120000)
+        self.now = 119999
+        self.session.step(self.now)
+        self.assertEqual(len(self.transport.requests), 1)
+        self.now = 120000
+        for _ in range(9):
+            self.session.step(self.now)
+        self.assertEqual(len(self.transport.requests), 1)
+        self.session.step(self.now)
+        self.assertEqual(len(self.transport.requests), 2)
+        self.assertEqual(self.transport.requests[-1]['samples'], 500)
+        self.assertEqual(self.transport.requests[-1]['sequence'], 2)
+
+    def test_successful_retry_waits_for_next_batch_not_another_full_minute(self):
+        self.start_request()
+        self.transport.result = ('error', None)
+        self.session.step(self.now)
+        self.now = 90000
+        self.session.step(self.now)
+        self.now = 92000
+        self.transport.result = ('ok', self.response())
+        self.session.step(self.now)
+        self.assertEqual(self.client.next_sync, 120000)
+
+    def test_batch_alignment_does_not_skip_failure_backoff(self):
+        self.start_request()
+        for delay in (30000, 60000, 120000):
+            self.transport.result = ('error', None)
+            self.session.step(self.now)
+            deadline = base.add(self.now, delay)
+            self.assertEqual(self.client.next_sync, deadline)
+            count = len(self.transport.requests)
+            self.now = base.add(deadline, -1)
+            self.session.step(self.now)
+            self.assertEqual(len(self.transport.requests), count)
+            self.now = deadline
+            for _ in range(10):
+                self.session.step(self.now)
+            self.assertTrue(self.session.inflight)
+            self.assertEqual(self.transport.requests[-1]['samples'], 250)
+
+    def test_batch_alignment_is_wrap_safe(self):
+        self.start_request()
+        self.now = base.WRAP - 1000
+        self.worker.next_batch = 1000
+        self.transport.result = ('ok', self.response())
+        self.session.deadline = base.add(self.now, 5000)
+        self.session.step(self.now)
+        self.assertEqual(self.client.next_sync, 1000)
+
+    def test_prepares_wifi_before_first_sync_without_claiming_offline(self):
+        ready = [False]
+        self.transport.prepare = lambda: ready[0]
+        self.session.step(0)
+        self.assertEqual(self.session.status(), 'JOINING WIFI')
+        self.assertEqual(self.transport.requests, [])
+        ready[0] = True
+        self.session.step(1)
+        self.assertEqual(self.session.status(), 'WAITING SYNC')
+        self.assertEqual(self.transport.requests, [])
+
+    def test_wifi_preparation_failure_uses_backoff(self):
+        calls = []
+        def fail():
+            calls.append(True)
+            raise OSError("AP unavailable")
+        self.transport.prepare = fail
+        self.session.step(0)
+        self.session.step(1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.session.status(), 'OFFLINE')
+        self.assertEqual(self.client.next_sync, 30000)
+
+    def test_due_sync_waits_for_wifi_and_does_not_consume_request_deadline(self):
+        self.transport.prepare = lambda: False
+        self.now = 120000
+        self.session.step(self.now)
+        self.assertFalse(self.session.inflight)
+        self.assertIsNone(self.session.deadline)
+        self.assertEqual(self.client.sequence, 0)
+        self.transport.prepare = lambda: True
+        for _ in range(10):
+            self.session.step(self.now)
+        self.assertTrue(self.session.inflight)
+        self.assertEqual(self.session.deadline, 125000)
+
     def test_response_loss_retries_the_same_snapshot_with_backoff(self):
         self.start_request()
         original = dict(self.transport.requests[-1])

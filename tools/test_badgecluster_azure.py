@@ -31,6 +31,8 @@ def https_request(base_url, payload):
 
 
 class HostTransport:
+    test_mode = True
+
     def __init__(self, base_url):
         self.base_url = base_url
         self.process = None

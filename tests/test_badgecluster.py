@@ -91,8 +91,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(self.client.request(500, 390)['sequence'], 2)
 
     def test_capped_backoff_and_staleness(self):
-        self.assertFalse(self.client.due(119999))
-        self.assertTrue(self.client.due(120000))
+        self.assertFalse(self.client.due(59999))
+        self.assertTrue(self.client.due(60000))
         for delay in (30000, 60000, 120000, 300000, 300000):
             self.client.failed(0)
             self.assertEqual(self.client.next_sync, delay)
@@ -100,7 +100,8 @@ class ProtocolTests(unittest.TestCase):
         req = self.client.request(250, 198)
         self.client.acknowledge(self.response(req), WRAP - 1000)
         self.assertFalse(self.client.stale(0))
-        self.assertTrue(self.client.stale(239000))
+        self.assertFalse(self.client.stale(118999))
+        self.assertTrue(self.client.stale(119000))
 
     def test_invalid_ack_does_not_change_state(self):
         req = self.client.request(250, 198)
